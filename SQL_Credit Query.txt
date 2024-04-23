@@ -1,0 +1,73 @@
+WITH delivery_note_with_index AS (
+    SELECT *, 
+    ROW_NUMBER() OVER (PARTITION BY name ORDER BY modified DESC) AS index  
+    FROM kyosk-prod.erp_reports.delivery_note 
+    WHERE workflow_state IN ('PAID', 'DELIVERED')
+    AND company = 'KYOSK DIGITAL SERVICES LTD (KE)'
+), 
+regional_mapping AS (
+    SELECT * FROM kyosk-prod.erp_reports.upload_regional_mapping
+),
+warehouse_locations AS (
+    SELECT * FROM kyosk-prod.erp_reports.upload_warehouse_coordinates
+),
+delivery_note_with_items AS (
+    SELECT 
+        dn.posting_date,
+        dn.territory,
+        dn.sales_partner,
+        contact_mobile,
+        dn.kyosk_sales_order AS sales_order,
+        dn.customer,
+        sum(dni.amount) as amount
+    FROM delivery_note_with_index dn
+    cross join unnest(items) dni
+    WHERE index = 1 AND posting_date BETWEEN '2023-01-01' AND '2023-06-30'
+    GROUP BY 1, 2, 3, 4, 5, 6
+),
+Last_one_year_total_customer_value AS (
+    SELECT DISTINCT
+        lv.customer,
+        COUNT(DISTINCT lv.kyosk_sales_order) AS one_year_Orders,
+        sum(dni.amount) as one_year_revenue 
+    FROM delivery_note_with_index lv
+    cross join unnest(items) dni
+    WHERE index = 1 AND posting_date >='2022-06-01'
+    group by 1
+)
+
+SELECT DISTINCT 
+    dn.customer,
+    dn.sales_partner,
+    dn.contact_mobile AS Phone_Number,
+    dn.Territory,
+    lv.one_year_Orders,
+    lv.one_year_revenue,
+    sum(dn.amount)over(partition by dn.customer) as six_months_revenue,
+    count(distinct dn.sales_order)over(partition by dn.customer) as six_months_orders,
+    round(sum(dn.amount)over(partition by dn.customer)/6,0) as Average_Six_months_revenue,
+    -- Risk_Classification_case
+    CASE
+        WHEN round(sum(dn.amount)over(partition by dn.customer)/6,0)  >= 100000 THEN 'Platinum'
+        WHEN round(sum(dn.amount)over(partition by dn.customer)/6,0)  >= 50000 AND round(sum(dn.amount)over(partition by dn.customer)/6,0) < 1000000 THEN 'Gold'
+        WHEN round(sum(dn.amount)over(partition by dn.customer)/6,0)  >= 15000 AND round(sum(dn.amount)over(partition by dn.customer)/6,0) < 50000 THEN 'Silver'
+        WHEN round(sum(dn.amount)over(partition by dn.customer)/6,0)  >= 3000 AND round(sum(dn.amount)over(partition by dn.customer)/6,0) < 15000 THEN 'Bronze'
+        ELSE 'No_Credit'
+    END AS Risk_Classification,
+
+    -- Credit_Limit_case
+    CASE
+        WHEN round(sum(dn.amount)over(partition by dn.customer)/6,0)  >= 100000 THEN round (sum(dn.amount)over(partition by dn.customer)/12,0)
+        WHEN round(sum(dn.amount)over(partition by dn.customer)/6,0)  >= 50000 AND round(sum(dn.amount)over(partition by dn.customer)/6,0) < 100000 THEN round (sum(dn.amount)over(partition by dn.customer)/12,0)
+        WHEN round(sum(dn.amount)over(partition by dn.customer)/6,0)  >= 15000 AND round(sum(dn.amount)over(partition by dn.customer)/6,0) < 50000 THEN round (sum(dn.amount)over(partition by dn.customer)/12,0)
+        WHEN round(sum(dn.amount)over(partition by dn.customer)/6,0)  >= 3000 AND round(sum(dn.amount)over(partition by dn.customer)/6,0) < 15000 THEN round (sum(dn.amount)over(partition by dn.customer)/12,0)
+        ELSE 0
+    END AS Credit_Limit
+ 
+FROM delivery_note_with_items dn
+JOIN Last_one_year_total_customer_value lv ON dn.customer = lv.customer
+
+  ORDER BY RAND()
+  LIMIT 5000
+
+   
