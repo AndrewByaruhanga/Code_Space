@@ -3,7 +3,7 @@ WITH delivery_note_M AS (
     ROW_NUMBER() OVER (PARTITION BY name ORDER BY modified DESC) AS index  
     FROM prod_reports.delivery_note 
     WHERE state IN ('PAID', 'DELIVERED')
-    AND company = 'Andy_Company'
+    AND company = 'Company_name'
 ),
 shop_locations AS (
     SELECT * FROM reports.upload_location
