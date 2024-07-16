@@ -1,34 +1,31 @@
-WITH delivery_note_with_index AS (
+WITH delivery_note_M AS (
     SELECT *, 
     ROW_NUMBER() OVER (PARTITION BY name ORDER BY modified DESC) AS index  
-    FROM kyosk-prod.erp_reports.delivery_note 
-    WHERE workflow_state IN ('PAID', 'DELIVERED')
-    AND company = 'KYOSK DIGITAL SERVICES LTD (KE)'
-), 
-regional_mapping AS (
-    SELECT * FROM kyosk-prod.erp_reports.upload_regional_mapping
+    FROM prod_reports.delivery_note 
+    WHERE state IN ('PAID', 'DELIVERED')
+    AND company = 'Andy_Company'
 ),
-warehouse_locations AS (
-    SELECT * FROM kyosk-prod.erp_reports.upload_warehouse_coordinates
+shop_locations AS (
+    SELECT * FROM reports.upload_location
 ),
-delivery_note_with_items AS (
+delivery_note_P AS (
     SELECT 
         dn.posting_date,
         dn.territory,
         dn.sales_partner,
         contact_mobile,
-        dn.kyosk_sales_order AS sales_order,
+        dn.sales_order,
         dn.customer,
         sum(dni.amount) as amount
-    FROM delivery_note_with_index dn
+    FROM delivery_note_M dn
     cross join unnest(items) dni
-    WHERE index = 1 AND posting_date BETWEEN '2023-01-01' AND '2023-06-30'
+    WHERE index = 1 AND posting_date BETWEEN '2023-01-01' AND '2024-04-30'
     GROUP BY 1, 2, 3, 4, 5, 6
 ),
 Last_one_year_total_customer_value AS (
     SELECT DISTINCT
         lv.customer,
-        COUNT(DISTINCT lv.kyosk_sales_order) AS one_year_Orders,
+        COUNT(DISTINCT lv.sales_order) AS one_year_Orders,
         sum(dni.amount) as one_year_revenue 
     FROM delivery_note_with_index lv
     cross join unnest(items) dni
