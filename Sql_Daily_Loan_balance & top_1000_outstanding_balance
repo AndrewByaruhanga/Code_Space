@@ -1,0 +1,188 @@
+
+--Creating the Loans Table
+create table LOANS (
+    loan_id int primary key,
+    user_id int,
+    total_amount_disbursed decimal(10, 2),
+    disbursement_date date
+);
+
+
+--Creating the Payments Table
+create table PAYMENTS (
+    payments_id int primary key,
+    loan_id int,
+    amount decimal (10, 2),
+    type varchar(50),
+    payment_timestamp date
+);
+
+--Inserting sample Data in the Loans Table
+
+insert into LOANS (loan_id, user_id, total_amount_disbursed, disbursement_date) values
+(1, 101, 5000.00, '2024-01-05'),
+(2, 102, 7500.00, '2024-01-15'),
+(3, 103, 12000.00, '2024-02-01'),
+(4, 104, 4500.00, '2024-02-10'),
+(5, 105, 20000.00, '2024-03-05'),
+(6, 106, 5500.00, '2024-03-18'),
+(7, 107, 8000.00, '2024-04-05'),
+(8, 108, 10000.00, '2024-04-20'),
+(9, 109, 15000.00, '2024-05-05'),
+(10, 110, 6000.00, '2024-06-01');
+
+--Inserting sample Data in the Payments Table
+
+INSERT INTO PAYMENTS (payments_id, loan_id, amount, type, payment_timestamp)
+VALUES
+(1, 1, 1000.00, 'repayment', '2024-01-31'),
+(2, 2, 1500.00, 'repayment', '2024-02-20'),
+(3, 3, 12000.00, 'repayment', '2024-02-28'),
+(4, 4, 1000.00, 'disbursement', '2024-03-10'),
+(5, 5, 5000.00, 'repayment', '2024-03-15'),
+(6, 6, 1100.00, 'disbursement', '2024-04-01'),
+(7, 7, 8000.00, 'repayment', '2024-04-15'),
+(8, 8, 2000.00, 'repayment', '2024-05-10'),
+(9, 9, 3000.00, 'repayment', '2024-05-25'),
+(10, 10, 1200.00, 'repayment', '2024-06-30');
+
+--Create a Daily Loan Balance Table
+
+CREATE TABLE DailyLoanBalance (
+    date DATE,
+	user_id int,
+	loan_id INT,
+    total_amount_disbursed DECIMAL(10, 2),
+    total_outstanding_amount DECIMAL(10, 2),
+    latest_repayment_date DATE,
+    PRIMARY KEY (loan_id, date)
+);
+
+--Query to create a DailyLoanBalance table that will have total outstanding balance on each day 
+WITH LoanData AS (
+    SELECT 
+        l.loan_id, 
+        l.user_id, 
+        l.disbursement_date, 
+        DATEADD(DAY, 60, l.disbursement_date) AS end_date,
+        SUM(CASE WHEN p.type = 'disbursement' THEN p.amount ELSE 0 END) AS total_disbursed,
+        SUM(CASE WHEN p.type = 'repayment' THEN p.amount ELSE 0 END) AS total_repaid
+    FROM 
+        LOANS l
+    LEFT JOIN 
+        PAYMENTS p ON l.loan_id = p.loan_id
+    GROUP BY 
+        l.loan_id, l.user_id, l.disbursement_date
+),
+DailyDates AS (
+    SELECT 
+        ld.loan_id, 
+        ld.disbursement_date AS date, 
+        ld.end_date
+    FROM 
+        LoanData ld
+    WHERE 
+        CAST(ld.disbursement_date AS DATE) <= CAST(GETDATE() AS DATE)
+    UNION ALL
+    SELECT 
+        dd.loan_id, 
+        DATEADD(DAY, 1, dd.date) AS date, 
+        dd.end_date
+    FROM 
+        DailyDates dd
+    WHERE 
+        dd.date < dd.end_date
+), 
+SourceData AS (
+    SELECT 
+        dd.loan_id,
+        ld.user_id, 
+        CAST(GETDATE() AS DATE) AS activity_date, 
+        SUM(CASE WHEN p.type = 'disbursement' THEN p.amount ELSE 0 END) 
+            OVER (PARTITION BY dd.loan_id ORDER BY dd.date ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS total_disbursed_amount,
+        SUM(CASE WHEN p.type = 'repayment' THEN p.amount ELSE 0 END) 
+            OVER (PARTITION BY dd.loan_id ORDER BY dd.date ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS total_repaid_amount,
+        ISNULL(
+            MAX(CASE WHEN p.type IN ('disbursement', 'repayment') THEN p.payment_timestamp END) 
+                OVER (PARTITION BY dd.loan_id ORDER BY dd.date ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW),
+            '1900-01-01'
+        ) AS latest_repayment_date
+    FROM 
+        DailyDates dd
+    LEFT JOIN 
+        PAYMENTS p ON dd.loan_id = p.loan_id AND dd.date = p.payment_timestamp
+    JOIN 
+        LoanData ld ON dd.loan_id = ld.loan_id 
+)
+
+MERGE DailyLoanBalance AS target
+USING SourceData AS source
+ON target.loan_id = source.loan_id AND target.date = source.activity_date 
+
+WHEN MATCHED THEN
+    UPDATE SET 
+        target.total_outstanding_amount = source.total_disbursed_amount - source.total_repaid_amount,
+        target.latest_repayment_date = source.latest_repayment_date
+
+WHEN NOT MATCHED BY TARGET THEN
+    INSERT (date, user_id, loan_id, total_amount_disbursed, total_outstanding_amount, latest_repayment_date)
+    VALUES (
+        source.activity_date, 
+        source.user_id, 
+        source.loan_id, 
+        source.total_disbursed_amount, 
+        source.total_disbursed_amount - source.total_repaid_amount, 
+        source.latest_repayment_date
+    );
+
+--Query to view the DailyLoanBalance Table
+
+select 
+      date, 
+	  user_id, 
+	  loan_id, 
+	  total_amount_disbursed, 
+	  total_outstanding_amount, 
+	  latest_repayment_date 
+	  from 
+	      DailyLoanBalance;
+
+--Query to create top 1000 customers with 10000 outstanding balance or more than 70% of their disbursed amount 30 days prior to current date 
+
+WITH FilteredLoans AS (
+    SELECT 
+        user_id,
+        loan_id,
+        total_outstanding_amount,
+        latest_repayment_date,
+        total_amount_disbursed,
+        DATEDIFF(DAY, latest_repayment_date, GETDATE()) AS last_paid_before_n_days
+    FROM 
+        DailyLoanBalance
+    WHERE 
+        (DATEDIFF(DAY, latest_repayment_date, GETDATE()) > 30 
+         AND total_outstanding_amount >= (0.7 * total_amount_disbursed))
+        OR 
+        (total_outstanding_amount >= 10000)
+),
+RankedLoans AS (
+    SELECT 
+        user_id,
+        loan_id,
+		last_paid_before_n_days,
+        total_outstanding_amount,
+        ROW_NUMBER() OVER (ORDER BY total_outstanding_amount DESC) AS rnk
+    FROM 
+        FilteredLoans
+)
+
+SELECT 
+    user_id,
+    loan_id,
+    last_paid_before_n_days,
+    total_outstanding_amount,
+    rnk
+	from
+	    RankedLoans
+	where 
+        rnk <= 1000;
